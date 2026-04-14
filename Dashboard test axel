@@ -1,1 +1,1225 @@
+import streamlit as st
+import pandas as pd
+import plotly.graph_objects as go
+from plotly.subplots import make_subplots
+import numpy as np
+import os
 
+# ════════════════════════════════════════════════════════════════════════════════
+# PAGE CONFIGURATION
+# ════════════════════════════════════════════════════════════════════════════════
+st.set_page_config(
+    page_title="Adidas Financial Dashboard",
+    page_icon="👟",
+    layout="wide",
+    initial_sidebar_state="expanded",
+)
+
+# ════════════════════════════════════════════════════════════════════════════════
+# CUSTOM CSS — Adidas-themed: black, white, accent blue
+# ════════════════════════════════════════════════════════════════════════════════
+st.markdown("""
+<style>
+    .main .block-container {padding-top:1rem;max-width:1400px;}
+    .dashboard-header {
+        background:linear-gradient(135deg,#000 0%,#1a1a2e 100%);
+        color:#fff;padding:1.5rem 2rem;border-radius:10px;margin-bottom:1.2rem;text-align:center;
+    }
+    .dashboard-header h1 {color:#fff;margin:0;font-size:2.2rem;letter-spacing:2px;}
+    .dashboard-header p {color:#adb5bd;margin:.4rem 0 0;font-size:1rem;}
+    .metric-card {
+        background:#fff;border-radius:10px;padding:1rem 1.2rem;
+        box-shadow:0 2px 8px rgba(0,0,0,.08);border-left:4px solid #000;margin-bottom:.6rem;
+    }
+    .metric-card.good {border-left-color:#00A651;}
+    .metric-card.warning {border-left-color:#FF6B00;}
+    .metric-card.danger {border-left-color:#E31937;}
+    .metric-card .label {color:#666;font-size:.82rem;text-transform:uppercase;letter-spacing:.5px;}
+    .metric-card .value {color:#000;font-size:1.7rem;font-weight:700;margin:.2rem 0;}
+    .metric-card .bench {color:#999;font-size:.78rem;}
+    .section-hdr {
+        background:#f8f9fa;padding:.7rem 1.1rem;border-radius:8px;
+        border-left:4px solid #000;margin:1rem 0 .8rem;font-weight:600;font-size:1.05rem;
+    }
+    .formula-box {
+        background:#f0f2f6;padding:.8rem 1rem;border-radius:8px;
+        font-family:'Courier New',monospace;margin:.4rem 0;border:1px solid #ddd;font-size:.9rem;
+    }
+    .nc-card {
+        background:#fff8e1;border:1px solid #ffe082;border-radius:8px;padding:1rem;margin:.5rem 0;
+    }
+    .nc-card h4 {margin:0 0 .3rem;color:#e65100;}
+    .nc-card p {margin:.2rem 0;font-size:.9rem;}
+    .compare-delta {text-align:center;padding:.5rem;border-radius:8px;margin:.3rem 0;}
+    .delta-up {background:#e8f5e9;color:#2e7d32;font-weight:700;font-size:1.1rem;}
+    .delta-down {background:#ffebee;color:#c62828;font-weight:700;font-size:1.1rem;}
+    .delta-neutral {background:#f5f5f5;color:#616161;font-weight:700;font-size:1.1rem;}
+</style>
+""", unsafe_allow_html=True)
+
+# ════════════════════════════════════════════════════════════════════════════════
+# CONSTANTS
+# ════════════════════════════════════════════════════════════════════════════════
+PALETTE = ["#000000", "#004B87", "#00A651", "#E31937", "#FF6B00", "#7B2D8E"]
+YR_CLR = {2024: "#000000", 2023: "#004B87", 2022: "#00A651", 2021: "#E31937"}
+GREEN, RED, ORANGE = "#00A651", "#E31937", "#FF6B00"
+
+# ════════════════════════════════════════════════════════════════════════════════
+# DATA LOADING
+# ════════════════════════════════════════════════════════════════════════════════
+@st.cache_data
+def load_data():
+    fp = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+        "Easy-to-use simplified balance sheet Financial diagnosis_Adidas.xlsx")
+    if not os.path.exists(fp):
+        st.error(f"Excel file not found at: {fp}")
+        st.stop()
+
+    df = pd.read_excel(fp, sheet_name="Balance Sheet", header=0)
+    yrs = [2024, 2023, 2022, 2021]
+
+    # Map rows by index (0-based after header)
+    ROW = {
+        "Intangible assets": 0, "PP&E": 1, "Other non-current assets": 2,
+        "Total non-current assets": 3,
+        "Inventories": 4, "Accounts receivable": 5, "Other current assets": 6,
+        "Cash and cash equivalents": 7, "Total current assets": 8,
+        "Total assets": 9,
+        "Issued share capital": 10, "Capital & Other reserves": 11,
+        "Equity portion of convertible debt": 12, "Retained earnings": 13,
+        "Total equity": 14,
+        "Borrowings non-current": 15, "Other non-current liabilities": 16,
+        "Total non-current liabilities": 17,
+        "Accounts payable": 18, "Bank overdraft": 19,
+        "Borrowings current": 20, "Other current liabilities": 21,
+        "Total current liabilities": 22, "Total equity and liabilities": 23,
+    }
+
+    d = {}
+    for item, idx in ROW.items():
+        d[item] = {yr: float(df.iloc[idx][yr]) if pd.notna(df.iloc[idx][yr]) else 0.0 for yr in yrs}
+    return d, yrs
+
+# ════════════════════════════════════════════════════════════════════════════════
+# METRIC COMPUTATION — every balance-sheet-derivable metric from the course
+# ════════════════════════════════════════════════════════════════════════════════
+def compute(data, yrs):
+    M = {}
+    for y in yrs:
+        fa  = data["Total non-current assets"][y]
+        ca  = data["Total current assets"][y]
+        ta  = data["Total assets"][y]
+        se  = data["Total equity"][y]
+        ltd = data["Borrowings non-current"][y]       # Long-Term Debt
+        std = data["Borrowings current"][y]            # Short-Term Debt
+        ncl = data["Total non-current liabilities"][y]
+        cl  = data["Total current liabilities"][y]
+        cash = data["Cash and cash equivalents"][y]
+        inv  = data["Inventories"][y]
+        ar   = data["Accounts receivable"][y]
+        oca  = data["Other current assets"][y]
+        ap   = data["Accounts payable"][y]
+        od   = data["Bank overdraft"][y]
+        ocl  = data["Other current liabilities"][y]
+        oncl = data["Other non-current liabilities"][y]
+
+        m = {}
+        # ── Session 2: Core BS Aggregates ──────────────────────────────────────
+        # Working Capital = Shareholders' Equity + Long-Term Liabilities − Fixed Assets
+        m["WC"] = se + ncl - fa
+        # Working Capital Need = Current Assets (excl. Cash) − Current Liab (excl. STD & Overdraft)
+        m["WCN"] = (inv + ar + oca) - (ap + ocl)
+        # Net Cash = WC − WCN  (verification: Cash − STD − Overdraft)
+        m["Net Cash"] = m["WC"] - m["WCN"]
+        m["Net Cash Check"] = cash - std - od
+        # Net Debt = LTD + STD − Cash
+        m["Net Debt"] = ltd + std - cash
+        # Capital Employed = Fixed Assets + WCN
+        m["Capital Employed"] = fa + m["WCN"]
+        # Invested Capital = Shareholders' Equity + Net Debt
+        m["Invested Capital"] = se + m["Net Debt"]
+        # Difference due to Other Non-Current Liabilities
+        m["CE-IC Gap"] = m["Capital Employed"] - m["Invested Capital"]
+
+        # ── Session 6: Liquidity Ratios ────────────────────────────────────────
+        # Current Ratio = Current Assets / Current Liabilities  (healthy: 1.5–2.0)
+        m["Current Ratio"] = ca / cl if cl else None
+        # Quick Ratio = (CA − Inventory) / CL  (healthy: 1.0–1.5)
+        m["Quick Ratio"] = (ca - inv) / cl if cl else None
+        # Cash Ratio = Cash / CL  (ideal: 0.5–1.0)
+        m["Cash Ratio"] = cash / cl if cl else None
+
+        # ── Session 6: Solvency & Leverage ─────────────────────────────────────
+        td = ltd + std
+        m["Total Debt"] = td
+        # Total Debt Ratio = Total Debt / Total Assets  (good: 0.2–0.4)
+        m["Total Debt Ratio"] = td / ta if ta else None
+        # Debt-to-Equity = Total Debt / SE  (healthy: 0.5–1.0)
+        m["D/E Ratio"] = td / se if se else None
+        # Equity Multiplier = Total Assets / SE
+        m["Equity Multiplier"] = ta / se if se else None
+        # Verification: D/E should equal EM − 1
+        # Note: EM − 1 = (TA − SE)/SE = Total Liabilities / SE, not exactly TD/SE
+        # So D/E ≠ EM − 1 when there are non-debt liabilities. We show both for the course check.
+        m["EM minus 1"] = (ta / se - 1) if se else None
+
+        # ── Structural percentages (% of Total Assets) ────────────────────────
+        if ta:
+            for k in ["Intangible assets", "PP&E", "Other non-current assets",
+                       "Inventories", "Accounts receivable", "Other current assets",
+                       "Cash and cash equivalents"]:
+                m[f"{k} %"] = data[k][y] / ta * 100
+            m["NCA %"] = fa / ta * 100
+            m["CA %"] = ca / ta * 100
+            m["Equity %"] = se / ta * 100
+            m["NCL %"] = ncl / ta * 100
+            m["CL %"] = cl / ta * 100
+
+        M[y] = m
+
+    # YoY growth for raw items and computed aggregates
+    for i, y in enumerate(yrs[:-1]):
+        py = yrs[i + 1]
+        for k in ["Total assets", "Total equity", "Total non-current assets",
+                   "Total current assets", "Total non-current liabilities",
+                   "Total current liabilities", "Inventories", "Cash and cash equivalents",
+                   "Accounts receivable", "PP&E", "Borrowings non-current", "Borrowings current"]:
+            c, p = data[k][y], data[k][py]
+            M[y][f"{k} YoY"] = ((c - p) / abs(p) * 100) if p else None
+        for k in ["WC", "WCN", "Net Cash", "Net Debt", "Capital Employed", "Invested Capital"]:
+            c, p = M[y][k], M[py][k]
+            M[y][f"{k} YoY"] = ((c - p) / abs(p) * 100) if p else None
+    return M
+
+# ════════════════════════════════════════════════════════════════════════════════
+# HELPER FUNCTIONS
+# ════════════════════════════════════════════════════════════════════════════════
+def fm(v):
+    """Thousands → Millions formatted string."""
+    return f"€{v/1000:,.1f}M" if v is not None else "N/A"
+
+def fr(v, d=2):
+    return f"{v:.{d}f}" if v is not None else "N/A"
+
+def fp(v):
+    return f"{v:+.1f}%" if v is not None else "N/A"
+
+def health(v, lo, hi, higher=True):
+    if v is None: return "warning"
+    if higher:
+        return "good" if v >= lo else ("warning" if v >= lo * 0.7 else "danger")
+    else:
+        return "good" if v <= hi else ("warning" if v <= hi * 1.5 else "danger")
+
+def h_icon(s):
+    return {"good": "🟢", "warning": "🟡", "danger": "🔴"}.get(s, "⚪")
+
+def card(label, value, bench="", h="good"):
+    return (f'<div class="metric-card {h}"><div class="label">{label}</div>'
+            f'<div class="value">{value}</div><div class="bench">{bench}</div></div>')
+
+def plotly_layout(title="", h=420):
+    return dict(
+        title=dict(text=title, font=dict(size=16, color="#000")),
+        template="plotly_white", height=h,
+        font=dict(family="Arial, sans-serif", size=12),
+        margin=dict(l=60, r=30, t=50, b=50),
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+    )
+
+# ════════════════════════════════════════════════════════════════════════════════
+# LOAD & COMPUTE
+# ════════════════════════════════════════════════════════════════════════════════
+data, years = load_data()
+M = compute(data, years)
+
+# ════════════════════════════════════════════════════════════════════════════════
+# SIDEBAR
+# ════════════════════════════════════════════════════════════════════════════════
+with st.sidebar:
+    st.markdown("### Dashboard Controls")
+    st.markdown("---")
+    st.markdown("**Select Years (Overview)**")
+    sel_yrs = st.multiselect("Years:", years, default=years, key="yf")
+    if not sel_yrs:
+        sel_yrs = years
+    st.markdown("---")
+    st.markdown("**Year-to-Year Comparison**")
+    ya = st.selectbox("Year A (recent):", years, index=0, key="ya")
+    yb_opts = [y for y in years if y != ya]
+    yb = st.selectbox("Year B (baseline):", yb_opts, index=len(yb_opts) - 1, key="yb")
+    st.markdown("---")
+    st.caption("Adidas AG — Balance Sheet data in €K\nYears 2021–2024")
+
+# ════════════════════════════════════════════════════════════════════════════════
+# HEADER
+# ════════════════════════════════════════════════════════════════════════════════
+st.markdown(
+    '<div class="dashboard-header">'
+    "<h1>ADIDAS — Financial Analysis Dashboard</h1>"
+    "<p>Comprehensive Balance Sheet Analysis &amp; Financial Diagnosis | 2021 – 2024</p>"
+    "</div>", unsafe_allow_html=True,
+)
+
+# ════════════════════════════════════════════════════════════════════════════════
+# TABS
+# ════════════════════════════════════════════════════════════════════════════════
+tabs = st.tabs([
+    "📋 Balance Sheet", "📐 BS Aggregates", "💧 Liquidity",
+    "🏗️ Solvency & Leverage", "🔍 Structural Analysis",
+    "⚖️ Year Comparison", "📈 Trend & Forecast", "🚫 Non-Computable Metrics",
+])
+
+# ──────────────────────────────────────────────────────────────────────────────
+# TAB 1 — BALANCE SHEET OVERVIEW
+# ──────────────────────────────────────────────────────────────────────────────
+with tabs[0]:
+    st.markdown('<div class="section-hdr">Complete Balance Sheet (€ Millions)</div>', unsafe_allow_html=True)
+
+    # Build display table
+    bs_items = [
+        ("ASSETS", None),
+        ("Intangible assets", "Intangible assets"),
+        ("Property, Plant & Equipment", "PP&E"),
+        ("Other non-current assets", "Other non-current assets"),
+        ("**Total Non-Current Assets (Fixed Assets)**", "Total non-current assets"),
+        ("Inventories", "Inventories"),
+        ("Accounts receivable", "Accounts receivable"),
+        ("Other current assets", "Other current assets"),
+        ("Cash and cash equivalents", "Cash and cash equivalents"),
+        ("**Total Current Assets**", "Total current assets"),
+        ("**TOTAL ASSETS**", "Total assets"),
+        ("", None),
+        ("EQUITY & LIABILITIES", None),
+        ("Issued share capital", "Issued share capital"),
+        ("Capital & Other reserves", "Capital & Other reserves"),
+        ("Equity portion of convertible debt", "Equity portion of convertible debt"),
+        ("Retained earnings", "Retained earnings"),
+        ("**Total Equity**", "Total equity"),
+        ("Long-Term Debt (Borrowings non-current)", "Borrowings non-current"),
+        ("Other non-current liabilities", "Other non-current liabilities"),
+        ("**Total Non-Current Liabilities**", "Total non-current liabilities"),
+        ("Accounts payable", "Accounts payable"),
+        ("Bank overdraft", "Bank overdraft"),
+        ("Short-Term Debt (Borrowings current)", "Borrowings current"),
+        ("Other current liabilities", "Other current liabilities"),
+        ("**Total Current Liabilities**", "Total current liabilities"),
+        ("**TOTAL EQUITY & LIABILITIES**", "Total equity and liabilities"),
+    ]
+
+    rows = []
+    for label, key in bs_items:
+        row = {"Item": label}
+        for y in sel_yrs:
+            if key is not None:
+                row[str(y)] = f"{data[key][y]/1000:,.1f}"
+            else:
+                row[str(y)] = ""
+        rows.append(row)
+
+    df_bs = pd.DataFrame(rows)
+    st.dataframe(df_bs, use_container_width=True, hide_index=True, height=700)
+
+    c1, c2 = st.columns(2)
+
+    # Asset composition stacked bar
+    with c1:
+        st.markdown('<div class="section-hdr">Asset Composition Over Time</div>', unsafe_allow_html=True)
+        asset_cats = ["Intangible assets", "PP&E", "Other non-current assets",
+                      "Inventories", "Accounts receivable", "Other current assets",
+                      "Cash and cash equivalents"]
+        fig = go.Figure()
+        for i, cat in enumerate(asset_cats):
+            fig.add_trace(go.Bar(
+                name=cat, x=[str(y) for y in sel_yrs],
+                y=[data[cat][y] / 1000 for y in sel_yrs],
+                marker_color=PALETTE[i % len(PALETTE)],
+            ))
+        fig.update_layout(**plotly_layout("Asset Breakdown (€M)"), barmode="stack")
+        st.plotly_chart(fig, use_container_width=True)
+
+    # Liabilities + Equity composition
+    with c2:
+        st.markdown('<div class="section-hdr">Equity & Liabilities Composition</div>', unsafe_allow_html=True)
+        lia_cats = [
+            ("Total equity", "Shareholders' Equity"),
+            ("Borrowings non-current", "Long-Term Debt"),
+            ("Other non-current liabilities", "Other NCL"),
+            ("Borrowings current", "Short-Term Debt"),
+            ("Other current liabilities", "Other CL"),
+        ]
+        fig = go.Figure()
+        colors_lia = ["#004B87", "#000000", "#7B2D8E", "#E31937", "#FF6B00"]
+        for i, (key, name) in enumerate(lia_cats):
+            fig.add_trace(go.Bar(
+                name=name, x=[str(y) for y in sel_yrs],
+                y=[data[key][y] / 1000 for y in sel_yrs],
+                marker_color=colors_lia[i],
+            ))
+        fig.update_layout(**plotly_layout("Equity & Liabilities (€M)"), barmode="stack")
+        st.plotly_chart(fig, use_container_width=True)
+
+    with st.expander("ℹ️ About this tab"):
+        st.markdown(
+            "Displays the full Adidas balance sheet sourced from the Excel file. "
+            "All values are converted from thousands to **millions of euros (€M)**. "
+            "Stacked bars show how asset and financing composition evolved over time."
+        )
+
+# ──────────────────────────────────────────────────────────────────────────────
+# TAB 2 — BALANCE SHEET AGGREGATES
+# ──────────────────────────────────────────────────────────────────────────────
+with tabs[1]:
+    st.markdown('<div class="section-hdr">Core Balance Sheet Aggregates (Session 2)</div>', unsafe_allow_html=True)
+
+    agg_keys = ["WC", "WCN", "Net Cash", "Net Debt", "Capital Employed", "Invested Capital"]
+    agg_labels = {
+        "WC": "Working Capital",
+        "WCN": "Working Capital Need",
+        "Net Cash": "Net Cash",
+        "Net Debt": "Net Debt",
+        "Capital Employed": "Capital Employed",
+        "Invested Capital": "Invested Capital",
+    }
+
+    # Metric cards row
+    for y in sel_yrs:
+        st.markdown(f"#### {y}")
+        cols = st.columns(6)
+        for i, k in enumerate(agg_keys):
+            with cols[i]:
+                st.markdown(card(agg_labels[k], fm(M[y][k])), unsafe_allow_html=True)
+
+    # Grouped bar chart
+    st.markdown('<div class="section-hdr">Aggregates Across Years</div>', unsafe_allow_html=True)
+    fig = go.Figure()
+    for y in sel_yrs:
+        fig.add_trace(go.Bar(
+            name=str(y),
+            x=[agg_labels[k] for k in agg_keys],
+            y=[M[y][k] / 1000 for k in agg_keys],
+            marker_color=YR_CLR.get(y, "#666"),
+        ))
+    fig.update_layout(**plotly_layout("BS Aggregates (€M)"), barmode="group")
+    st.plotly_chart(fig, use_container_width=True)
+
+    # Capital Employed vs Invested Capital verification
+    st.markdown('<div class="section-hdr">Verification: Capital Employed ≈ Invested Capital</div>', unsafe_allow_html=True)
+    st.markdown(
+        "In theory **Capital Employed = Invested Capital**. Any gap is caused by "
+        "**Other Non-Current Liabilities** (e.g., pensions, deferred tax) which are operational, not financial."
+    )
+    verify_rows = []
+    for y in sel_yrs:
+        verify_rows.append({
+            "Year": y,
+            "Capital Employed (€M)": f"{M[y]['Capital Employed']/1000:,.1f}",
+            "Invested Capital (€M)": f"{M[y]['Invested Capital']/1000:,.1f}",
+            "Gap (€M)": f"{M[y]['CE-IC Gap']/1000:,.1f}",
+            "Other NCL (€M)": f"{data['Other non-current liabilities'][y]/1000:,.1f}",
+            "Match?": "✅" if abs(M[y]["CE-IC Gap"] - data["Other non-current liabilities"][y]) < 1 else "⚠️",
+        })
+    st.dataframe(pd.DataFrame(verify_rows), use_container_width=True, hide_index=True)
+
+    # Net Cash verification
+    st.markdown('<div class="section-hdr">Verification: Net Cash = Cash − STD − Overdraft</div>', unsafe_allow_html=True)
+    nc_rows = []
+    for y in sel_yrs:
+        nc_rows.append({
+            "Year": y,
+            "NC (WC − WCN)": fm(M[y]["Net Cash"]),
+            "NC (Cash − STD − OD)": fm(M[y]["Net Cash Check"]),
+            "Match?": "✅" if abs(M[y]["Net Cash"] - M[y]["Net Cash Check"]) < 1 else "❌",
+        })
+    st.dataframe(pd.DataFrame(nc_rows), use_container_width=True, hide_index=True)
+
+    with st.expander("ℹ️ Formulas & Interpretation"):
+        st.markdown("""
+| Aggregate | Formula |
+|-----------|---------|
+| **Working Capital (WC)** | Shareholders' Equity + Long-Term Liabilities − Fixed Assets |
+| **Working Capital Need (WCN)** | Current Assets (excl. Cash) − Current Liabilities (excl. STD & Overdraft) |
+| **Net Cash (NC)** | WC − WCN &nbsp; *(also = Cash − STD − Overdraft)* |
+| **Net Debt** | Long-Term Debt + Short-Term Debt − Cash |
+| **Capital Employed** | Fixed Assets + WCN |
+| **Invested Capital** | Shareholders' Equity + Net Debt |
+
+- **WC > 0** means long-term resources cover fixed assets with a safety margin.
+- **WCN > 0** means operating cycle ties up cash (common for manufacturers like Adidas).
+- **Net Cash > 0** means the company has surplus liquidity beyond its operating needs.
+- **Capital Employed ≈ Invested Capital** — the gap equals Other Non-Current Liabilities.
+        """)
+
+# ──────────────────────────────────────────────────────────────────────────────
+# TAB 3 — LIQUIDITY RATIOS
+# ──────────────────────────────────────────────────────────────────────────────
+with tabs[2]:
+    st.markdown('<div class="section-hdr">Short-Term Liquidity Ratios (Session 6)</div>', unsafe_allow_html=True)
+
+    liq_cfg = {
+        "Current Ratio":  {"lo": 1.5, "hi": 2.0, "fmt": ".2f", "higher": True,
+                           "desc": "Measures ability to pay short-term obligations with current assets.",
+                           "formula": "Current Assets / Current Liabilities"},
+        "Quick Ratio":    {"lo": 1.0, "hi": 1.5, "fmt": ".2f", "higher": True,
+                           "desc": "Excludes inventory — more conservative liquidity test.",
+                           "formula": "(Current Assets − Inventory) / Current Liabilities"},
+        "Cash Ratio":     {"lo": 0.5, "hi": 1.0, "fmt": ".2f", "higher": True,
+                           "desc": "Most conservative — only cash covers current liabilities.",
+                           "formula": "Cash & Equivalents / Current Liabilities"},
+    }
+
+    # Cards
+    for y in sel_yrs:
+        st.markdown(f"#### {y}")
+        cols = st.columns(3)
+        for i, (k, cfg) in enumerate(liq_cfg.items()):
+            v = M[y][k]
+            h = health(v, cfg["lo"], cfg["hi"], cfg["higher"])
+            bench = f"Healthy: {cfg['lo']}–{cfg['hi']} {h_icon(h)}"
+            with cols[i]:
+                st.markdown(card(k, fr(v), bench, h), unsafe_allow_html=True)
+
+    # Line chart with benchmark bands
+    st.markdown('<div class="section-hdr">Liquidity Ratios Over Time</div>', unsafe_allow_html=True)
+    fig = go.Figure()
+    for k, cfg in liq_cfg.items():
+        vals = [M[y][k] for y in sel_yrs]
+        fig.add_trace(go.Scatter(
+            x=[str(y) for y in sel_yrs], y=vals, mode="lines+markers+text",
+            name=k, text=[fr(v) for v in vals], textposition="top center",
+            line=dict(width=3),
+        ))
+        # Benchmark band
+        fig.add_hrect(y0=cfg["lo"], y1=cfg["hi"], fillcolor="green", opacity=0.07,
+                      line_width=0, annotation_text=f"{k} healthy zone", annotation_position="top left")
+    fig.update_layout(**plotly_layout("Liquidity Ratios — Trend & Benchmarks", 480))
+    st.plotly_chart(fig, use_container_width=True)
+
+    # Detail table
+    liq_rows = []
+    for y in sel_yrs:
+        row = {"Year": y}
+        for k in liq_cfg:
+            v = M[y][k]
+            h = health(v, liq_cfg[k]["lo"], liq_cfg[k]["hi"], liq_cfg[k]["higher"])
+            row[k] = f"{fr(v)} {h_icon(h)}"
+        liq_rows.append(row)
+    st.dataframe(pd.DataFrame(liq_rows), use_container_width=True, hide_index=True)
+
+    with st.expander("ℹ️ Formulas & Interpretation"):
+        for k, cfg in liq_cfg.items():
+            st.markdown(f"**{k}**")
+            st.markdown(f'<div class="formula-box">{cfg["formula"]}</div>', unsafe_allow_html=True)
+            st.markdown(f"*{cfg['desc']}* — Benchmark: **{cfg['lo']} – {cfg['hi']}**\n")
+
+# ──────────────────────────────────────────────────────────────────────────────
+# TAB 4 — SOLVENCY & LEVERAGE
+# ──────────────────────────────────────────────────────────────────────────────
+with tabs[3]:
+    st.markdown('<div class="section-hdr">Long-Term Solvency & Leverage Ratios (Session 6)</div>', unsafe_allow_html=True)
+
+    sol_cfg = {
+        "Total Debt Ratio": {"lo": 0.2, "hi": 0.4, "higher": False,
+            "desc": "Proportion of assets financed by debt. Lower is safer.",
+            "formula": "Total Debt (LTD + STD) / Total Assets"},
+        "D/E Ratio": {"lo": 0.5, "hi": 1.0, "higher": False,
+            "desc": "Debt relative to equity. Higher means more leveraged.",
+            "formula": "Total Debt / Shareholders' Equity"},
+        "Equity Multiplier": {"lo": 1.5, "hi": 2.5, "higher": False,
+            "desc": "Measures financial leverage. EM = 1 means no debt at all.",
+            "formula": "Total Assets / Shareholders' Equity"},
+    }
+
+    for y in sel_yrs:
+        st.markdown(f"#### {y}")
+        cols = st.columns(3)
+        for i, (k, cfg) in enumerate(sol_cfg.items()):
+            v = M[y][k]
+            h = health(v, cfg["lo"], cfg["hi"], cfg["higher"])
+            bench = f"Healthy: {cfg['lo']}–{cfg['hi']} {h_icon(h)}"
+            with cols[i]:
+                st.markdown(card(k, fr(v), bench, h), unsafe_allow_html=True)
+
+    # Line chart
+    st.markdown('<div class="section-hdr">Solvency Ratios Over Time</div>', unsafe_allow_html=True)
+    fig = make_subplots(rows=1, cols=2, subplot_titles=("Debt Ratios", "Equity Multiplier"))
+
+    for k in ["Total Debt Ratio", "D/E Ratio"]:
+        vals = [M[y][k] for y in sel_yrs]
+        fig.add_trace(go.Scatter(
+            x=[str(y) for y in sel_yrs], y=vals, mode="lines+markers+text",
+            name=k, text=[fr(v) for v in vals], textposition="top center",
+        ), row=1, col=1)
+    fig.add_hrect(y0=0.2, y1=0.4, fillcolor="green", opacity=0.07, line_width=0, row=1, col=1)
+    fig.add_hrect(y0=0.5, y1=1.0, fillcolor="blue", opacity=0.05, line_width=0, row=1, col=1)
+
+    vals_em = [M[y]["Equity Multiplier"] for y in sel_yrs]
+    fig.add_trace(go.Scatter(
+        x=[str(y) for y in sel_yrs], y=vals_em, mode="lines+markers+text",
+        name="Equity Multiplier", text=[fr(v) for v in vals_em], textposition="top center",
+        line=dict(color="#7B2D8E", width=3),
+    ), row=1, col=2)
+    fig.update_layout(**plotly_layout("", 420))
+    st.plotly_chart(fig, use_container_width=True)
+
+    # D/E vs EM−1 verification
+    st.markdown('<div class="section-hdr">Verification: D/E vs EM − 1</div>', unsafe_allow_html=True)
+    st.markdown(
+        "The course states D/E = EM − 1. Strictly, **EM − 1 = Total Liabilities / Equity**, "
+        "while **D/E = Financial Debt / Equity**. They match only when all liabilities are financial debt."
+    )
+    de_rows = []
+    for y in sel_yrs:
+        de_rows.append({
+            "Year": y,
+            "D/E (Debt/Equity)": fr(M[y]["D/E Ratio"]),
+            "EM − 1 (Liabilities/Equity)": fr(M[y]["EM minus 1"]),
+            "Difference": fr(M[y]["EM minus 1"] - M[y]["D/E Ratio"] if M[y]["EM minus 1"] and M[y]["D/E Ratio"] else None),
+            "Note": "Gap = operational liabilities (Other NCL + Other CL) / Equity",
+        })
+    st.dataframe(pd.DataFrame(de_rows), use_container_width=True, hide_index=True)
+
+    with st.expander("ℹ️ Formulas & Interpretation"):
+        for k, cfg in sol_cfg.items():
+            st.markdown(f"**{k}**")
+            st.markdown(f'<div class="formula-box">{cfg["formula"]}</div>', unsafe_allow_html=True)
+            st.markdown(f"*{cfg['desc']}* — Benchmark: **{cfg['lo']} – {cfg['hi']}**\n")
+
+# ──────────────────────────────────────────────────────────────────────────────
+# TAB 5 — STRUCTURAL ANALYSIS
+# ──────────────────────────────────────────────────────────────────────────────
+with tabs[4]:
+    st.markdown('<div class="section-hdr">Balance Sheet Structure & Composition</div>', unsafe_allow_html=True)
+
+    # 100% stacked bars — Assets
+    c1, c2 = st.columns(2)
+    with c1:
+        st.markdown("##### Asset Structure (% of Total Assets)")
+        asset_pct_cats = [
+            ("Intangible assets %", "Intangibles"),
+            ("PP&E %", "PP&E"),
+            ("Other non-current assets %", "Other NCA"),
+            ("Inventories %", "Inventories"),
+            ("Accounts receivable %", "Receivables"),
+            ("Other current assets %", "Other CA"),
+            ("Cash and cash equivalents %", "Cash"),
+        ]
+        fig = go.Figure()
+        for i, (k, lbl) in enumerate(asset_pct_cats):
+            fig.add_trace(go.Bar(
+                name=lbl, x=[str(y) for y in sel_yrs],
+                y=[M[y].get(k, 0) for y in sel_yrs],
+                marker_color=PALETTE[i % len(PALETTE)],
+                text=[f"{M[y].get(k,0):.1f}%" for y in sel_yrs],
+                textposition="inside",
+            ))
+        fig.update_layout(**plotly_layout("", 450), barmode="stack", yaxis_title="% of Total Assets")
+        st.plotly_chart(fig, use_container_width=True)
+
+    # 100% stacked bars — Financing
+    with c2:
+        st.markdown("##### Financing Structure (% of Total Assets)")
+        fin_pct_cats = [("Equity %", "Equity"), ("NCL %", "Non-Current Liab."), ("CL %", "Current Liab.")]
+        fig = go.Figure()
+        fin_colors = ["#004B87", "#000000", "#E31937"]
+        for i, (k, lbl) in enumerate(fin_pct_cats):
+            fig.add_trace(go.Bar(
+                name=lbl, x=[str(y) for y in sel_yrs],
+                y=[M[y].get(k, 0) for y in sel_yrs],
+                marker_color=fin_colors[i],
+                text=[f"{M[y].get(k,0):.1f}%" for y in sel_yrs],
+                textposition="inside",
+            ))
+        fig.update_layout(**plotly_layout("", 450), barmode="stack", yaxis_title="% of Total Assets")
+        st.plotly_chart(fig, use_container_width=True)
+
+    # Pie charts per year
+    st.markdown('<div class="section-hdr">Asset Breakdown by Year</div>', unsafe_allow_html=True)
+    pie_cols = st.columns(len(sel_yrs))
+    asset_keys = ["Intangible assets", "PP&E", "Other non-current assets",
+                  "Inventories", "Accounts receivable", "Other current assets",
+                  "Cash and cash equivalents"]
+    for i, y in enumerate(sel_yrs):
+        with pie_cols[i]:
+            vals = [data[k][y] / 1000 for k in asset_keys]
+            fig = go.Figure(go.Pie(
+                labels=asset_keys, values=vals, hole=0.4,
+                marker_colors=PALETTE[:len(asset_keys)],
+                textinfo="percent", textfont_size=10,
+            ))
+            fig.update_layout(title=dict(text=str(y), font=dict(size=14)),
+                              height=300, margin=dict(l=10, r=10, t=40, b=10),
+                              showlegend=False)
+            st.plotly_chart(fig, use_container_width=True)
+
+    # YoY Growth rates
+    st.markdown('<div class="section-hdr">Year-over-Year Growth Rates (%)</div>', unsafe_allow_html=True)
+    growth_items = ["Total assets", "Total equity", "Total non-current assets",
+                    "Total current assets", "Inventories", "Cash and cash equivalents",
+                    "Accounts receivable", "PP&E"]
+    g_rows = []
+    for k in growth_items:
+        row = {"Item": k}
+        for y in sel_yrs[:-1]:
+            v = M[y].get(f"{k} YoY")
+            row[f"{y} vs {y - 1 if y - 1 in years else years[years.index(y)+1]}"] = fp(v) if v is not None else "—"
+        g_rows.append(row)
+    st.dataframe(pd.DataFrame(g_rows), use_container_width=True, hide_index=True)
+
+    # Growth bar chart
+    fig = go.Figure()
+    for y in sel_yrs[:-1]:
+        py = years[years.index(y) + 1]
+        vals = [M[y].get(f"{k} YoY", 0) or 0 for k in growth_items]
+        fig.add_trace(go.Bar(
+            name=f"{y} vs {py}", x=growth_items, y=vals,
+            marker_color=YR_CLR.get(y, "#666"),
+        ))
+    fig.update_layout(**plotly_layout("YoY Growth (%)"), barmode="group", yaxis_title="%")
+    fig.add_hline(y=0, line_dash="dash", line_color="black", line_width=1)
+    st.plotly_chart(fig, use_container_width=True)
+
+# ──────────────────────────────────────────────────────────────────────────────
+# TAB 6 — YEAR-TO-YEAR COMPARISON (HIGHLIGHT)
+# ──────────────────────────────────────────────────────────────────────────────
+with tabs[5]:
+    st.markdown(f'<div class="section-hdr">Comprehensive Comparison: {ya} vs {yb}</div>', unsafe_allow_html=True)
+
+    # ── SECTION 1: Key Metrics Delta Cards ─────────────────────────────────
+    st.markdown("### Key Metric Changes")
+    compare_items = [
+        ("Total assets", "Total Assets", True, True),
+        ("Total equity", "Total Equity", True, True),
+        ("Cash and cash equivalents", "Cash", True, True),
+        ("Inventories", "Inventories", False, True),
+        ("Borrowings non-current", "LT Debt", False, True),
+        ("Borrowings current", "ST Debt", False, True),
+    ]
+    cols = st.columns(len(compare_items))
+    for i, (key, label, higher_good, is_raw) in enumerate(compare_items):
+        va = data[key][ya] if is_raw else M[ya][key]
+        vb = data[key][yb] if is_raw else M[yb][key]
+        delta = va - vb
+        pct = (delta / abs(vb) * 100) if vb != 0 else 0
+        favorable = (delta > 0) == higher_good
+        cls = "delta-up" if favorable else ("delta-down" if not favorable else "delta-neutral")
+        arrow = "▲" if delta > 0 else ("▼" if delta < 0 else "→")
+        with cols[i]:
+            st.markdown(f"**{label}**")
+            st.markdown(f"**{ya}:** {fm(va)}")
+            st.markdown(f"**{yb}:** {fm(vb)}")
+            st.markdown(
+                f'<div class="compare-delta {cls}">{arrow} {fm(abs(delta))} ({pct:+.1f}%)</div>',
+                unsafe_allow_html=True)
+
+    # ── SECTION 2: Side-by-side grouped bars — Aggregates ──────────────────
+    st.markdown("### Balance Sheet Aggregates")
+    agg_compare = ["WC", "WCN", "Net Cash", "Net Debt", "Capital Employed", "Invested Capital"]
+    fig = go.Figure()
+    fig.add_trace(go.Bar(
+        name=str(ya), x=[agg_labels[k] for k in agg_compare],
+        y=[M[ya][k] / 1000 for k in agg_compare], marker_color="#000",
+    ))
+    fig.add_trace(go.Bar(
+        name=str(yb), x=[agg_labels[k] for k in agg_compare],
+        y=[M[yb][k] / 1000 for k in agg_compare], marker_color="#004B87",
+    ))
+    fig.update_layout(**plotly_layout(f"BS Aggregates: {ya} vs {yb} (€M)"), barmode="group")
+    st.plotly_chart(fig, use_container_width=True)
+
+    # ── SECTION 3: Side-by-side grouped bars — Ratios with benchmark bands ─
+    st.markdown("### Liquidity Ratios")
+    liq_keys = ["Current Ratio", "Quick Ratio", "Cash Ratio"]
+    fig = go.Figure()
+    fig.add_trace(go.Bar(name=str(ya), x=liq_keys,
+        y=[M[ya][k] for k in liq_keys], marker_color="#000", text=[fr(M[ya][k]) for k in liq_keys], textposition="outside"))
+    fig.add_trace(go.Bar(name=str(yb), x=liq_keys,
+        y=[M[yb][k] for k in liq_keys], marker_color="#004B87", text=[fr(M[yb][k]) for k in liq_keys], textposition="outside"))
+    # Benchmark bands
+    fig.add_hrect(y0=1.5, y1=2.0, fillcolor="green", opacity=0.08, line_width=0,
+                  annotation_text="CR healthy", annotation_position="top left")
+    fig.add_hrect(y0=1.0, y1=1.5, fillcolor="blue", opacity=0.05, line_width=0,
+                  annotation_text="QR healthy", annotation_position="bottom left")
+    fig.add_hrect(y0=0.5, y1=1.0, fillcolor="orange", opacity=0.05, line_width=0)
+    fig.update_layout(**plotly_layout(f"Liquidity: {ya} vs {yb}"), barmode="group")
+    st.plotly_chart(fig, use_container_width=True)
+
+    st.markdown("### Solvency Ratios")
+    sol_keys = ["Total Debt Ratio", "D/E Ratio", "Equity Multiplier"]
+    fig = go.Figure()
+    fig.add_trace(go.Bar(name=str(ya), x=sol_keys,
+        y=[M[ya][k] for k in sol_keys], marker_color="#000", text=[fr(M[ya][k]) for k in sol_keys], textposition="outside"))
+    fig.add_trace(go.Bar(name=str(yb), x=sol_keys,
+        y=[M[yb][k] for k in sol_keys], marker_color="#004B87", text=[fr(M[yb][k]) for k in sol_keys], textposition="outside"))
+    fig.add_hrect(y0=0.2, y1=0.4, fillcolor="green", opacity=0.08, line_width=0,
+                  annotation_text="TDR healthy zone", annotation_position="top left")
+    fig.update_layout(**plotly_layout(f"Solvency: {ya} vs {yb}"), barmode="group")
+    st.plotly_chart(fig, use_container_width=True)
+
+    # ── SECTION 4: Delta indicators table ──────────────────────────────────
+    st.markdown("### Detailed Change Analysis")
+    ratio_compare = [
+        ("Current Ratio", True, "1.5–2.0"),
+        ("Quick Ratio", True, "1.0–1.5"),
+        ("Cash Ratio", True, "0.5–1.0"),
+        ("Total Debt Ratio", False, "0.2–0.4"),
+        ("D/E Ratio", False, "0.5–1.0"),
+        ("Equity Multiplier", False, "1.5–2.5"),
+    ]
+    delta_rows = []
+    for k, higher_good, bench in ratio_compare:
+        va, vb = M[ya][k], M[yb][k]
+        if va is not None and vb is not None:
+            d = va - vb
+            pct = (d / abs(vb) * 100) if vb != 0 else 0
+            favorable = (d > 0) == higher_good
+            arrow = "🟢 ▲" if favorable and d != 0 else ("🔴 ▼" if not favorable and d != 0 else "⚪ →")
+        else:
+            d, pct, arrow = None, None, "—"
+        delta_rows.append({
+            "Ratio": k,
+            f"{ya}": fr(va),
+            f"{yb}": fr(vb),
+            "Δ (Absolute)": f"{d:+.3f}" if d is not None else "N/A",
+            "Δ (%)": f"{pct:+.1f}%" if pct is not None else "N/A",
+            "Benchmark": bench,
+            "Status": arrow,
+        })
+    st.dataframe(pd.DataFrame(delta_rows), use_container_width=True, hide_index=True)
+
+    # ── SECTION 5: Radar / Spider Chart ────────────────────────────────────
+    st.markdown("### Radar Chart — Financial Health Profile")
+    st.caption("Each ratio is normalized to a 0–10 score (10 = best). Higher-is-better metrics are scaled by "
+               "their upper benchmark; lower-is-better metrics are inverted.")
+
+    radar_cfg = [
+        ("Current Ratio", 2.5, True), ("Quick Ratio", 2.0, True), ("Cash Ratio", 1.5, True),
+        ("Total Debt Ratio", 0.6, False), ("D/E Ratio", 2.0, False), ("Equity Multiplier", 5.0, False),
+    ]
+
+    def radar_score(val, scale, higher):
+        if val is None: return 0
+        if higher:
+            return min(val / scale * 10, 10)
+        else:
+            return max((1 - val / scale) * 10, 0)
+
+    cats = [c[0] for c in radar_cfg]
+    scores_a = [radar_score(M[ya][c[0]], c[1], c[2]) for c in radar_cfg]
+    scores_b = [radar_score(M[yb][c[0]], c[1], c[2]) for c in radar_cfg]
+
+    fig = go.Figure()
+    fig.add_trace(go.Scatterpolar(r=scores_a + [scores_a[0]], theta=cats + [cats[0]],
+        fill="toself", name=str(ya), fillcolor="rgba(0,0,0,0.15)", line=dict(color="#000", width=2)))
+    fig.add_trace(go.Scatterpolar(r=scores_b + [scores_b[0]], theta=cats + [cats[0]],
+        fill="toself", name=str(yb), fillcolor="rgba(0,75,135,0.15)", line=dict(color="#004B87", width=2)))
+    fig.update_layout(polar=dict(radialaxis=dict(visible=True, range=[0, 10])),
+                      height=480, title=f"Financial Health: {ya} vs {yb}", template="plotly_white")
+    st.plotly_chart(fig, use_container_width=True)
+
+    # ── SECTION 6: Waterfall Chart — Total Assets movement ─────────────────
+    st.markdown("### Waterfall: How Total Assets Changed")
+    wf_items = ["Intangible assets", "PP&E", "Other non-current assets",
+                "Inventories", "Accounts receivable", "Other current assets",
+                "Cash and cash equivalents"]
+    wf_deltas = [(k, (data[k][ya] - data[k][yb]) / 1000) for k in wf_items]
+
+    wf_labels = [f"Total Assets {yb}"] + [k for k, _ in wf_deltas] + [f"Total Assets {ya}"]
+    wf_values = [data["Total assets"][yb] / 1000] + [d for _, d in wf_deltas] + [data["Total assets"][ya] / 1000]
+    wf_measure = ["absolute"] + ["relative"] * len(wf_deltas) + ["total"]
+
+    fig = go.Figure(go.Waterfall(
+        x=wf_labels, y=wf_values, measure=wf_measure,
+        increasing=dict(marker_color=GREEN),
+        decreasing=dict(marker_color=RED),
+        totals=dict(marker_color="#000"),
+        connector=dict(line=dict(color="#ccc", width=1)),
+        text=[f"€{v:,.0f}M" for v in wf_values],
+        textposition="outside",
+    ))
+    fig.update_layout(**plotly_layout(f"Total Assets Bridge: {yb} → {ya} (€M)", 500))
+    st.plotly_chart(fig, use_container_width=True)
+
+    # ── SECTION 7: Waterfall — Total Equity movement ───────────────────────
+    st.markdown("### Waterfall: How Total Equity Changed")
+    eq_items = ["Issued share capital", "Capital & Other reserves",
+                "Equity portion of convertible debt", "Retained earnings"]
+    eq_deltas = [(k, (data[k][ya] - data[k][yb]) / 1000) for k in eq_items]
+    eq_labels = [f"Equity {yb}"] + [k for k, _ in eq_deltas] + [f"Equity {ya}"]
+    eq_values = [data["Total equity"][yb] / 1000] + [d for _, d in eq_deltas] + [data["Total equity"][ya] / 1000]
+    eq_measure = ["absolute"] + ["relative"] * len(eq_deltas) + ["total"]
+
+    fig = go.Figure(go.Waterfall(
+        x=eq_labels, y=eq_values, measure=eq_measure,
+        increasing=dict(marker_color=GREEN), decreasing=dict(marker_color=RED),
+        totals=dict(marker_color="#004B87"),
+        connector=dict(line=dict(color="#ccc", width=1)),
+        text=[f"€{v:,.0f}M" for v in eq_values], textposition="outside",
+    ))
+    fig.update_layout(**plotly_layout(f"Equity Bridge: {yb} → {ya} (€M)", 450))
+    st.plotly_chart(fig, use_container_width=True)
+
+# ──────────────────────────────────────────────────────────────────────────────
+# TAB 7 — TREND & FORECASTING
+# ──────────────────────────────────────────────────────────────────────────────
+with tabs[6]:
+    st.markdown('<div class="section-hdr">Linear Regression Forecasting (Trend Document)</div>', unsafe_allow_html=True)
+    st.markdown(
+        "Using **linear least-squares regression** (y = a·t + b) on 2021–2024 data to project 2025–2026 values. "
+        "The **R²** coefficient measures goodness-of-fit (1.0 = perfect)."
+    )
+
+    forecast_yrs = [2025, 2026]
+    all_yrs_sorted = sorted(years)
+    x_actual = np.array(all_yrs_sorted, dtype=float)
+
+    # Metrics to forecast
+    forecast_items = {
+        "Total Assets": [data["Total assets"][y] / 1000 for y in all_yrs_sorted],
+        "Total Equity": [data["Total equity"][y] / 1000 for y in all_yrs_sorted],
+        "Fixed Assets (NCA)": [data["Total non-current assets"][y] / 1000 for y in all_yrs_sorted],
+        "Current Assets": [data["Total current assets"][y] / 1000 for y in all_yrs_sorted],
+        "Cash": [data["Cash and cash equivalents"][y] / 1000 for y in all_yrs_sorted],
+        "Inventories": [data["Inventories"][y] / 1000 for y in all_yrs_sorted],
+        "Working Capital": [M[y]["WC"] / 1000 for y in all_yrs_sorted],
+        "WCN": [M[y]["WCN"] / 1000 for y in all_yrs_sorted],
+        "Net Cash": [M[y]["Net Cash"] / 1000 for y in all_yrs_sorted],
+        "Net Debt": [M[y]["Net Debt"] / 1000 for y in all_yrs_sorted],
+        "Current Ratio": [M[y]["Current Ratio"] for y in all_yrs_sorted],
+        "Quick Ratio": [M[y]["Quick Ratio"] for y in all_yrs_sorted],
+        "Total Debt Ratio": [M[y]["Total Debt Ratio"] for y in all_yrs_sorted],
+        "D/E Ratio": [M[y]["D/E Ratio"] for y in all_yrs_sorted],
+    }
+
+    # Summary table
+    summary_rows = []
+    forecast_results = {}
+    for name, vals in forecast_items.items():
+        y_arr = np.array(vals, dtype=float)
+        slope, intercept, r2, fvals = linear_regression_forecast(x_actual, y_arr, forecast_yrs)
+        if slope is not None:
+            forecast_results[name] = {"slope": slope, "intercept": intercept, "r2": r2,
+                                       "forecast": fvals, "actual": vals}
+            is_money = name not in ["Current Ratio", "Quick Ratio", "Total Debt Ratio", "D/E Ratio"]
+            fmt_fn = (lambda v: f"€{v:,.1f}M") if is_money else (lambda v: f"{v:.3f}")
+            summary_rows.append({
+                "Metric": name,
+                "Trend (slope a)": f"{slope:+.2f}" if is_money else f"{slope:+.4f}",
+                "Intercept (b)": f"{intercept:,.1f}" if is_money else f"{intercept:.3f}",
+                "R²": f"{r2:.4f}",
+                "Forecast 2025": fmt_fn(fvals[0]),
+                "Forecast 2026": fmt_fn(fvals[1]),
+            })
+
+    st.dataframe(pd.DataFrame(summary_rows), use_container_width=True, hide_index=True)
+
+    # Individual trend charts
+    st.markdown('<div class="section-hdr">Trend Lines & Projections</div>', unsafe_allow_html=True)
+
+    # 2 charts per row
+    items_list = list(forecast_results.items())
+    for row_start in range(0, len(items_list), 2):
+        cols = st.columns(2)
+        for col_idx in range(2):
+            idx = row_start + col_idx
+            if idx >= len(items_list):
+                break
+            name, res = items_list[idx]
+            with cols[col_idx]:
+                fig = go.Figure()
+
+                # Actual data points
+                fig.add_trace(go.Scatter(
+                    x=all_yrs_sorted, y=res["actual"], mode="markers+lines",
+                    name="Actual", marker=dict(color="#000", size=10),
+                    line=dict(color="#000", width=2),
+                ))
+
+                # Trend line (extended through forecast)
+                all_x = list(all_yrs_sorted) + forecast_yrs
+                trend_y = [res["slope"] * x + res["intercept"] for x in all_x]
+                fig.add_trace(go.Scatter(
+                    x=all_x, y=trend_y, mode="lines",
+                    name="Trend", line=dict(color="#004B87", width=2, dash="dash"),
+                ))
+
+                # Forecast points
+                fig.add_trace(go.Scatter(
+                    x=forecast_yrs, y=res["forecast"], mode="markers",
+                    name="Forecast", marker=dict(color="#E31937", size=12, symbol="diamond"),
+                ))
+
+                # Forecast shaded zone
+                fig.add_vrect(x0=2024.5, x1=2026.5, fillcolor="red", opacity=0.05, line_width=0)
+
+                fig.update_layout(
+                    title=dict(text=f"{name} (R²={res['r2']:.3f})", font=dict(size=13)),
+                    template="plotly_white", height=320,
+                    margin=dict(l=50, r=20, t=40, b=40),
+                    xaxis=dict(dtick=1),
+                    showlegend=False,
+                )
+                st.plotly_chart(fig, use_container_width=True)
+
+    with st.expander("ℹ️ About Linear Regression Forecasting"):
+        st.markdown("""
+**Method:** Ordinary Least Squares (OLS) — fits y = a·t + b to minimize squared errors.
+
+**R² (Coefficient of Determination):**
+- R² = 1 − (SS_res / SS_tot)
+- R² close to 1.0 → trend explains the data well
+- R² close to 0.0 → weak or no linear trend
+
+**Limitations:**
+- Only 4 data points (2021–2024), so forecasts have wide uncertainty
+- Linear model assumes constant growth — real-world dynamics are more complex
+- Forecasts for 2025–2026 should be treated as **indicative**, not predictive
+
+**Seasonality:** Cannot be analyzed — the data is annual, not quarterly/monthly.
+The course's additive (Y = T + S) and multiplicative (Y = T × S) models require sub-annual data.
+        """)
+
+# ──────────────────────────────────────────────────────────────────────────────
+# TAB 8 — NON-COMPUTABLE METRICS
+# ──────────────────────────────────────────────────────────────────────────────
+with tabs[7]:
+    st.markdown('<div class="section-hdr">Metrics That Cannot Be Computed from Balance Sheet Alone</div>',
+                unsafe_allow_html=True)
+    st.markdown(
+        "The following metrics are covered in the course but **require Income Statement, Cash Flow Statement, "
+        "or market data** that is not available in the Adidas balance sheet file. "
+        "This section demonstrates full understanding of the course material."
+    )
+
+    # ── Income Statement Metrics (Session 3) ──
+    st.markdown("---")
+    st.markdown("## 📊 Session 3 — Income Statement (IS) Metrics")
+    st.markdown("*These require a complete Income Statement — Sales, COGS, Operating Costs, D&A, etc.*")
+
+    is_metrics = [
+        ("Gross Margin", "Sales − Cost of Goods Sold (COGS)",
+         "Needs: **Sales** revenue and **COGS** from the Income Statement.",
+         "Measures the basic profitability of the product after direct production costs."),
+        ("Added Value", "Production − Raw Materials − Other External Expenses",
+         "Needs: **Production** value, **raw material purchases**, and **external expenses**.",
+         "Shows the value the company creates beyond its purchased inputs."),
+        ("EBITDA", "Operating Revenues − Operating Costs (excl. D&A)",
+         "Needs: **all operating revenues and costs** from the Income Statement.",
+         "Earnings before interest, taxes, depreciation & amortization — key operating performance metric."),
+        ("EBIT / Operating Income", "EBITDA − Depreciation & Amortization − Impairments",
+         "Needs: **EBITDA** plus **D&A** and **impairment** charges.",
+         "Operating profit after accounting for asset wear and value losses."),
+        ("EBT / PBT (Profit Before Tax)", "EBIT − Financial Expenses + Financial Incomes",
+         "Needs: **EBIT** plus **financial expenses** (interest) and **financial income**.",
+         "Shows profit before government taxation — reflects both operating and financing performance."),
+        ("Net Income / Net Profit", "EBT − Corporate Income Tax",
+         "Needs: **EBT** and **tax expense** from the Income Statement.",
+         "The bottom line — profit available to shareholders after all expenses and taxes."),
+    ]
+
+    for name, formula, needed, desc in is_metrics:
+        st.markdown(f"""
+<div class="nc-card">
+    <h4>{name}</h4>
+    <p><strong>Formula:</strong> <code>{formula}</code></p>
+    <p><strong>Missing data:</strong> {needed}</p>
+    <p><em>{desc}</em></p>
+</div>""", unsafe_allow_html=True)
+
+    # ── Profitability & DuPont (Session 4) ──
+    st.markdown("---")
+    st.markdown("## 📈 Session 4 — Profitability & DuPont Analysis")
+    st.markdown("*These require Net Income and/or Sales, which come from the Income Statement.*")
+
+    prof_metrics = [
+        ("ROE (Return on Equity)", "Net Profit / Shareholders' Equity",
+         "Needs: **Net Income** (we have Equity from the BS).",
+         "Measures how efficiently equity capital generates profit. Central metric for shareholders."),
+        ("ROS / Net Profit Margin", "Net Profit / Sales",
+         "Needs: **Net Income** and **Sales**.",
+         "Shows what percentage of each euro of revenue becomes profit."),
+        ("Asset Turnover", "Sales / Total Assets",
+         "Needs: **Sales** (we have Total Assets from the BS).",
+         "Measures how efficiently assets generate revenue. Higher = more efficient."),
+        ("DuPont Decomposition", "ROE = ROS × Asset Turnover × Equity Multiplier",
+         "Needs: **Net Income** and **Sales**. (Equity Multiplier CAN be computed: EM = "
+         f"{fr(M[years[0]]['Equity Multiplier'])} in {years[0]}).",
+         "Decomposes ROE into profitability (ROS), efficiency (Turnover), and leverage (EM). "
+         "We can only compute the leverage component."),
+        ("Gross Profit Margin", "Gross Profit / Sales",
+         "Needs: **Gross Profit** and **Sales**.",
+         "Shows percentage of revenue remaining after direct costs. Key for pricing strategy."),
+        ("EBITDA Margin", "EBITDA / Sales",
+         "Needs: **EBITDA** and **Sales**.",
+         "Operating profitability before non-cash charges — useful for comparing across industries."),
+        ("EBIT Margin", "EBIT / Sales",
+         "Needs: **EBIT** and **Sales**.",
+         "Operating profitability after D&A — reflects true operating efficiency."),
+    ]
+
+    for name, formula, needed, desc in prof_metrics:
+        st.markdown(f"""
+<div class="nc-card">
+    <h4>{name}</h4>
+    <p><strong>Formula:</strong> <code>{formula}</code></p>
+    <p><strong>Missing data:</strong> {needed}</p>
+    <p><em>{desc}</em></p>
+</div>""", unsafe_allow_html=True)
+
+    # ── Working Capital Efficiency (Session 4) ──
+    st.markdown("---")
+    st.markdown("## ⏱️ Session 4 — Working Capital & Efficiency Ratios")
+    st.markdown("*These require Sales and/or COGS. The course uses a 360-day year and 1.2 VAT multiplier.*")
+
+    wc_eff = [
+        ("DSO (Days Sales Outstanding)", "(Accounts Receivable × 360) / (Sales × 1.2)",
+         "Needs: **Sales**. (AR is available from the BS). Goal: < 30 days.",
+         "How many days it takes to collect payment from customers."),
+        ("DIO (Days Inventory Outstanding)", "(Inventory × 360) / COGS",
+         "Needs: **COGS**. (Inventory is available from the BS). Goal: < 30 days.",
+         "How many days inventory sits before being sold."),
+        ("DPO (Days Payable Outstanding)", "(Accounts Payable × 360) / (COGS × 1.2)",
+         "Needs: **COGS**. (AP is available but is 0 in this dataset). Goal: > 60 days.",
+         "How many days the company takes to pay suppliers. Note: AP is €0 in all years."),
+        ("CCC (Cash Conversion Cycle)", "DIO + DSO − DPO",
+         "Needs: **Sales** and **COGS** (to compute DSO, DIO, DPO). Goal: as low as possible, negative is excellent.",
+         "The full cash cycle — how long cash is tied up in operations."),
+        ("PP&E Turnover", "Sales / Net PP&E",
+         "Needs: **Sales**. (PP&E is available from the BS).",
+         "How efficiently the company uses its physical assets to generate revenue."),
+    ]
+
+    for name, formula, needed, desc in wc_eff:
+        st.markdown(f"""
+<div class="nc-card">
+    <h4>{name}</h4>
+    <p><strong>Formula:</strong> <code>{formula}</code></p>
+    <p><strong>Missing data:</strong> {needed}</p>
+    <p><em>{desc}</em></p>
+</div>""", unsafe_allow_html=True)
+
+    # ── Cash Flow Statement (Session 5) ──
+    st.markdown("---")
+    st.markdown("## 💰 Session 5 — Cash Flow Statement (CFS) Metrics")
+    st.markdown("*These require Income Statement data (Net Income, D&A) and financing details (Capex, Dividends, etc.).*")
+
+    cfs_metrics = [
+        ("CFO (Operating Cash Flow)", "Net Income + D&A − Δ Receivables − Δ Inventory + Δ Payables",
+         "Needs: **Net Income** and **D&A** (balance sheet changes are available but insufficient alone).",
+         "Cash generated from core operations. The most important cash flow measure."),
+        ("CFI (Investing Cash Flow)", "Fixed Asset Disposals − Capex",
+         "Needs: **Capex** (capital expenditures) and **disposal proceeds**.",
+         "Cash spent on or received from long-term investments."),
+        ("FCF (Free Cash Flow)", "CFO + CFI",
+         "Needs: **CFO** and **CFI** (both non-computable).",
+         "Cash available after maintaining/expanding the asset base. Key for valuation."),
+        ("CFF (Financing Cash Flow)", "Loans + Share Issuance − Debt Repayments − Dividends − Share Purchases",
+         "Needs: **detailed financing activities** (loan proceeds, repayments, dividends paid, buybacks).",
+         "Cash flows between the company and its capital providers."),
+        ("TCF (Total Cash Flow)", "FCF + CFF",
+         "Needs: **all cash flow components** above.",
+         "Net change in cash — should reconcile with the balance sheet cash change."),
+    ]
+
+    for name, formula, needed, desc in cfs_metrics:
+        st.markdown(f"""
+<div class="nc-card">
+    <h4>{name}</h4>
+    <p><strong>Formula:</strong> <code>{formula}</code></p>
+    <p><strong>Missing data:</strong> {needed}</p>
+    <p><em>{desc}</em></p>
+</div>""", unsafe_allow_html=True)
+
+    # ── Solvency ratios needing IS data (Session 6) ──
+    st.markdown("---")
+    st.markdown("## 🏗️ Session 6 — Solvency Ratios Requiring IS Data")
+
+    solv_is = [
+        ("Interest Coverage Ratio (ICR)", "EBIT / Interest Expense",
+         "Needs: **EBIT** and **Interest Expense** from the Income Statement. Healthy: 3–5, risk below 1.5.",
+         "Can the company comfortably pay interest on its debt? Below 1.5 signals financial distress."),
+        ("Net Debt / EBITDA", "Net Debt / EBITDA",
+         f"Needs: **EBITDA**. (Net Debt is computable: €{M[years[0]]['Net Debt']/1000:,.1f}M in {years[0]}). "
+         "Excellent: < 1, Healthy: 1–2, Warning: > 3.",
+         "How many years of EBITDA it would take to pay off net debt. Critical for credit rating."),
+    ]
+
+    for name, formula, needed, desc in solv_is:
+        st.markdown(f"""
+<div class="nc-card">
+    <h4>{name}</h4>
+    <p><strong>Formula:</strong> <code>{formula}</code></p>
+    <p><strong>Missing data:</strong> {needed}</p>
+    <p><em>{desc}</em></p>
+</div>""", unsafe_allow_html=True)
+
+    # ── Investor / Shareholder Ratios (Session 6) ──
+    st.markdown("---")
+    st.markdown("## 🧑‍💼 Session 6 — Investor / Shareholder Ratios")
+    st.markdown("*These require Net Income, dividends, share price, and shares outstanding — all unavailable.*")
+
+    inv_metrics = [
+        ("Dividend Payout Ratio (DPR)", "Total Dividends Paid / Net Income",
+         "Needs: **Dividends paid** and **Net Income**. Balanced: 0.3–0.6.",
+         "What fraction of earnings is returned to shareholders."),
+        ("Dividend Yield (DY)", "Dividends per Share / Share Price",
+         "Needs: **Dividends per share** and **market share price**. Attractive: 3%–6%.",
+         "Annual dividend income relative to share price — key for income investors."),
+        ("EPS (Earnings Per Share)", "Net Profit / Shares Outstanding",
+         "Needs: **Net Income** and **number of shares outstanding**.",
+         "How much profit each share earned — fundamental per-share metric."),
+        ("P/E Ratio (Price-to-Earnings)", "Market Price per Share / EPS",
+         "Needs: **share price** and **EPS**. Normal: 10–20.",
+         "How much investors pay per euro of earnings. High P/E = growth expectations."),
+        ("P/B Ratio (Price-to-Book)", "Market Price per Share / (Total Equity / Shares Outstanding)",
+         "Needs: **share price** and **shares outstanding** (Equity is available). Reasonable: 1–2.",
+         "Compares market valuation to accounting book value."),
+    ]
+
+    for name, formula, needed, desc in inv_metrics:
+        st.markdown(f"""
+<div class="nc-card">
+    <h4>{name}</h4>
+    <p><strong>Formula:</strong> <code>{formula}</code></p>
+    <p><strong>Missing data:</strong> {needed}</p>
+    <p><em>{desc}</em></p>
+</div>""", unsafe_allow_html=True)
+
+    # ── Trend & Seasonality ──
+    st.markdown("---")
+    st.markdown("## 📉 Trend Document — Seasonality Analysis")
+
+    st.markdown(f"""
+<div class="nc-card">
+    <h4>Seasonal Decomposition (Additive & Multiplicative)</h4>
+    <p><strong>Additive model:</strong> <code>Y = Trend + Seasonality (Sₖ)</code> — sum of coefficients = 0</p>
+    <p><strong>Multiplicative model:</strong> <code>Y = Trend × Seasonality (Pₖ)</code> — sum of coefficients = number of sub-periods</p>
+    <p><strong>Missing data:</strong> Needs <strong>quarterly or monthly</strong> observations.
+    Our data is <strong>annual</strong> (one observation per year), so there are no sub-periods to decompose.</p>
+    <p><em>Seasonality analysis requires repeated observations within each cycle (e.g., Q1-Q4 for quarterly,
+    Jan-Dec for monthly). With only annual data points, we can estimate a linear trend (done in Tab 7)
+    but cannot identify or separate seasonal patterns.</em></p>
+</div>""", unsafe_allow_html=True)
+
+    # Summary count
+    st.markdown("---")
+    total_nc = len(is_metrics) + len(prof_metrics) + len(wc_eff) + len(cfs_metrics) + len(solv_is) + len(inv_metrics) + 1
+    st.markdown(f"""
+### Summary
+| Category | Non-Computable Metrics |
+|----------|:---------------------:|
+| Income Statement (Session 3) | {len(is_metrics)} |
+| Profitability & DuPont (Session 4) | {len(prof_metrics)} |
+| Working Capital Efficiency (Session 4) | {len(wc_eff)} |
+| Cash Flow Statement (Session 5) | {len(cfs_metrics)} |
+| Solvency requiring IS data (Session 6) | {len(solv_is)} |
+| Investor / Shareholder (Session 6) | {len(inv_metrics)} |
+| Seasonality (Trend Document) | 1 |
+| **Total** | **{total_nc}** |
+
+To compute these metrics, one would need:
+1. **Income Statement** — Sales, COGS, Operating Costs, D&A, Interest Expense, Tax
+2. **Cash Flow Statement** — or detailed notes on Capex, Dividends, Debt movements
+3. **Market Data** — Share price, shares outstanding
+4. **Sub-annual data** — Quarterly/monthly figures for seasonality decomposition
+    """)
